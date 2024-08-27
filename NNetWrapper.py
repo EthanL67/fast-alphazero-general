@@ -11,11 +11,11 @@ import sys
 
 sys.path.append('../../')
 
-
 args = dotdict({
-    'lr': 0.001,
+    'lr': 0.002,
+    'dropout': 0.3,
     'cuda': torch.cuda.is_available(),
-    'num_channels': 128,
+    'num_channels': 200,
     'depth': 5,
 })
 
@@ -147,7 +147,7 @@ class NNetWrapper():
         filepath = os.path.join(folder, filename)
         if not os.path.exists(filepath):
             raise ("No model in path {}".format(filepath))
-        checkpoint = torch.load(filepath)
+        checkpoint = torch.load(filepath, weights_only=True)
         self.nnet.load_state_dict(checkpoint['state_dict'])
         if 'opt_state' in checkpoint:
             self.optimizer.load_state_dict(checkpoint['opt_state'])

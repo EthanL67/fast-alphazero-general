@@ -75,28 +75,32 @@ class Coach:
 
     def generateSelfPlayAgents(self):
         self.ready_queue = mp.Queue()
+        self.input_tensors = []  # Initialize these lists
+        self.policy_tensors = []
+        self.value_tensors = []
+        self.batch_ready = []
+        self.agents = []
+
         boardx, boardy = self.game.getBoardSize()
         for i in range(self.args.workers):
-            self.input_tensors.append(torch.zeros(
-                [self.args.process_batch_size, boardx, boardy]))
-            self.input_tensors[i].pin_memory()
-            self.input_tensors[i].share_memory_()
+            input_tensor = torch.zeros([self.args.process_batch_size, boardx, boardy], dtype=torch.float32)
+            input_tensor.share_memory_()
+            self.input_tensors.append(input_tensor)
 
-            self.policy_tensors.append(torch.zeros(
-                [self.args.process_batch_size, self.game.getActionSize()]))
-            self.policy_tensors[i].pin_memory()
-            self.policy_tensors[i].share_memory_()
+            policy_tensor = torch.zeros([self.args.process_batch_size, self.game.getActionSize()], dtype=torch.float32)
+            policy_tensor.share_memory_()
+            self.policy_tensors.append(policy_tensor)
 
-            self.value_tensors.append(torch.zeros(
-                [self.args.process_batch_size, 1]))
-            self.value_tensors[i].pin_memory()
-            self.value_tensors[i].share_memory_()
+            value_tensor = torch.zeros([self.args.process_batch_size, 1], dtype=torch.float32)
+            value_tensor.share_memory_()
+            self.value_tensors.append(value_tensor)
+
             self.batch_ready.append(mp.Event())
 
             self.agents.append(
-                SelfPlayAgent(i, self.game, self.ready_queue, self.batch_ready[i],
-                              self.input_tensors[i], self.policy_tensors[i], self.value_tensors[i], self.file_queue,
-                              self.result_queue, self.completed, self.games_played, self.args))
+                SelfPlayAgent(i, self.game.__class__, self.game.gv, self.ready_queue, self.batch_ready[i],
+                              input_tensor, policy_tensor, value_tensor,
+                              self.file_queue, self.result_queue, self.completed, self.games_played, self.args))
             self.agents[i].start()
 
     def processSelfPlayBatches(self):
@@ -192,11 +196,11 @@ class Coach:
             self.args.numItersForTrainExamplesHistory)
         for i in range(max(1, iteration - currentHistorySize), iteration + 1):
             data_tensor = torch.load(
-                f'{self.args.data}/iteration-{i:04d}-data.pkl')
+                f'{self.args.data}/iteration-{i:04d}-data.pkl', weights_only=True)
             policy_tensor = torch.load(
-                f'{self.args.data}/iteration-{i:04d}-policy.pkl')
+                f'{self.args.data}/iteration-{i:04d}-policy.pkl', weights_only=True)
             value_tensor = torch.load(
-                f'{self.args.data}/iteration-{i:04d}-value.pkl')
+                f'{self.args.data}/iteration-{i:04d}-value.pkl', weights_only=True)
             datasets.append(TensorDataset(
                 data_tensor, policy_tensor, value_tensor))
 

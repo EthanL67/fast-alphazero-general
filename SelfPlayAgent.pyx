@@ -2,62 +2,141 @@
 import numpy as np
 import torch
 import torch.multiprocessing as mp
+from numba import cuda
 
 from MCTS import MCTS
 
 
-class SelfPlayAgent(mp.Process):
+# class SelfPlayAgent(mp.Process):
+#
+#     def __init__(self, id, game, ready_queue, batch_ready, batch_tensor, policy_tensor, value_tensor, output_queue,
+#              result_queue, complete_count, games_played, args):
+#         super().__init__()
+#         self.id = id
+#         self.game = game
+#         self.ready_queue = ready_queue
+#         self.batch_ready = batch_ready
+#         self.batch_tensor = batch_tensor
+#         self.batch_size = self.batch_tensor.shape[0]
+#         self.policy_tensor = policy_tensor
+#         self.value_tensor = value_tensor
+#         self.output_queue = output_queue
+#         self.result_queue = result_queue
+#         self.games = []
+#         self.canonical = []
+#         self.histories = []
+#         self.player = []
+#         self.turn = []
+#         self.mcts = []
+#         self.games_played = games_played
+#         self.complete_count = complete_count
+#         self.args = args
+#         self.valid = torch.zeros_like(self.policy_tensor)
+#         self.fast = False
+#         for _ in range(self.batch_size):
+#             self.games.append(self.game.getInitBoard())
+#             self.histories.append([])
+#             self.player.append(1)
+#             self.turn.append(1)
+#             self.mcts.append(MCTS(self.game, None, self.args))
+#             self.canonical.append(None)
+#
+#     def run(self):
+#         np.random.seed()
+#         while self.games_played.value < self.args.gamesPerIteration:
+#             self.generateCanonical()
+#             self.fast = np.random.random_sample() < self.args.probFastSim
+#             if self.fast:
+#                 for i in range(self.args.numFastSims):
+#                     self.generateBatch()
+#                     self.processBatch()
+#             else:
+#                 for i in range(self.args.numMCTSSims):
+#                     self.generateBatch()
+#                     self.processBatch()
+#             self.playMoves()
+#         with self.complete_count.get_lock():
+#             self.complete_count.value += 1
+#         self.output_queue.close()
+#         self.output_queue.join_thread()
 
-    def __init__(self, id, game, ready_queue, batch_ready, batch_tensor, policy_tensor, value_tensor, output_queue,
-             result_queue, complete_count, games_played, args):
+class SelfPlayAgent(mp.Process):
+    def __init__(self, id, game_class, gv, ready_queue, batch_ready,
+                 input_tensor, policy_tensor, value_tensor,
+                 output_queue, result_queue, complete_count, games_played, args):
         super().__init__()
         self.id = id
-        self.game = game
+        self.game_class = game_class
+        self.gv = gv
         self.ready_queue = ready_queue
         self.batch_ready = batch_ready
-        self.batch_tensor = batch_tensor
-        self.batch_size = self.batch_tensor.shape[0]
+        self.input_tensor = input_tensor
         self.policy_tensor = policy_tensor
         self.value_tensor = value_tensor
         self.output_queue = output_queue
         self.result_queue = result_queue
-        self.games = []
-        self.canonical = []
-        self.histories = []
-        self.player = []
-        self.turn = []
-        self.mcts = []
-        self.games_played = games_played
         self.complete_count = complete_count
+        self.games_played = games_played
         self.args = args
-        self.valid = torch.zeros_like(self.policy_tensor)
-        self.fast = False
-        for _ in range(self.batch_size):
-            self.games.append(self.game.getInitBoard())
-            self.histories.append([])
-            self.player.append(1)
-            self.turn.append(1)
-            self.mcts.append(MCTS(self.game, None, self.args))
-            self.canonical.append(None)
+
+    def __reduce__(self):
+        return (SelfPlayAgent,
+                (self.id, self.game_class, self.gv, self.ready_queue,
+                 self.batch_ready, self.input_tensor,
+                 self.policy_tensor, self.value_tensor,
+                 self.output_queue, self.result_queue,
+                 self.complete_count, self.games_played, self.args))
+
+    def cleanup_cuda(self):
+        cuda.close()
 
     def run(self):
-        np.random.seed()
-        while self.games_played.value < self.args.gamesPerIteration:
-            self.generateCanonical()
-            self.fast = np.random.random_sample() < self.args.probFastSim
-            if self.fast:
-                for i in range(self.args.numFastSims):
-                    self.generateBatch()
-                    self.processBatch()
-            else:
-                for i in range(self.args.numMCTSSims):
-                    self.generateBatch()
-                    self.processBatch()
-            self.playMoves()
-        with self.complete_count.get_lock():
-            self.complete_count.value += 1
-        self.output_queue.close()
-        self.output_queue.join_thread()
+        try:
+            # The tensors are already shared, so we can use them directly
+            self.batch_tensor = self.input_tensor
+            self.policy_tensor = self.policy_tensor
+            self.value_tensor = self.value_tensor
+
+            self.batch_size = self.batch_tensor.shape[0]
+            self.valid = torch.zeros_like(self.policy_tensor)
+
+            np.random.seed()
+            self.game = self.game_class(self.gv)  # Initialize game here
+            self.games = []
+            self.canonical = []
+            self.histories = []
+            self.player = []
+            self.turn = []
+            self.mcts = []
+            self.fast = False
+
+            for _ in range(self.batch_size):
+                self.games.append(self.game.getInitBoard())
+                self.histories.append([])
+                self.player.append(1)
+                self.turn.append(1)
+                self.mcts.append(MCTS(self.game, None, self.args))
+                self.canonical.append(None)
+
+            while self.games_played.value < self.args.gamesPerIteration:
+                self.generateCanonical()
+                self.fast = np.random.random_sample() < self.args.probFastSim
+                if self.fast:
+                    for i in range(self.args.numFastSims):
+                        self.generateBatch()
+                        self.processBatch()
+                else:
+                    for i in range(self.args.numMCTSSims):
+                        self.generateBatch()
+                        self.processBatch()
+                self.playMoves()
+            with self.complete_count.get_lock():
+                self.complete_count.value += 1
+            self.output_queue.close()
+            self.output_queue.join_thread()
+        finally:
+            self.cleanup_cuda()
+
 
     def generateBatch(self):
         for i in range(self.batch_size):
